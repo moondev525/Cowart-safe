@@ -5,3 +5,6 @@
 # Release artifacts are generated from source and intentionally tracked so the
 # installed plugin can start without npm or node_modules.
 mcp/generated/** linguist-generated=true
+mcp/generated/cowart-mcp.mjs text eol=lf
+mcp/generated/cowart-widget.html text eol=lf
+mcp/generated/release-manifest.json text eol=lf
