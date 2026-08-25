@@ -56,9 +56,9 @@ try {
 
   const packageJson = JSON.parse(await readFile(path.join(ROOT_DIR, "package.json"), "utf8"));
   const artifacts = new Map([
-    [artifactNames.mcpApps, Buffer.from(mcpAppsModule)],
-    [artifactNames.mcpBundle, mcpBundle],
-    [artifactNames.widget, Buffer.from(widgetHtml)],
+    [artifactNames.mcpApps, normalizedTextArtifact(mcpAppsModule)],
+    [artifactNames.mcpBundle, normalizedTextArtifact(mcpBundle)],
+    [artifactNames.widget, normalizedTextArtifact(widgetHtml)],
   ]);
   const releaseManifest = `${JSON.stringify({
     version: packageJson.version,
@@ -81,6 +81,16 @@ try {
 // Vite plugins may retain development-only handles after a programmatic build.
 // Release artifact generation is a one-shot command, so exit after cleanup.
 process.exit(0);
+
+function normalizedTextArtifact(value) {
+  return Buffer.from(
+    Buffer.from(value)
+      .toString("utf8")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n"),
+    "utf8",
+  );
+}
 
 async function buildWidgetArtifact(outDir) {
   const previousWidgetBuild = process.env.COWART_WIDGET_BUILD;

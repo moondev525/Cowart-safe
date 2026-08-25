@@ -9,7 +9,7 @@ Use this skill to turn user-provided Cowart 批注 screenshots into revised AI-g
 
 ## Preconditions
 
-Ensure the `cowart_mcp` tools required by this workflow are available. Do not call `render_cowart_canvas_widget` as a routine prerequisite: annotation requests sent from the Cowart widget already have an open canvas, and the existing widget synchronizes inserted results from MCP-backed storage. If the user separately asks to open, reopen, or explicitly refresh the canvas, handle that request once with the canvas-opening workflow.
+Ensure the `cowart_safe_mcp` tools required by this workflow are available. Do not call `render_cowart_canvas_widget` as a routine prerequisite: annotation requests sent from the Cowart widget already have an open canvas, and the existing widget synchronizes inserted results from MCP-backed storage. If the user separately asks to open, reopen, or explicitly refresh the canvas, handle that request once with the canvas-opening workflow. Every direct MCP call must pass the active workspace as `projectDir`; never use or infer the plugin repository as project storage.
 
 Cowart state is read and written through Cowart MCP tools, not through a localhost browser service.
 
@@ -56,19 +56,21 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    annotation-edit-20260620-153012.png
    ```
 
-   Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   Resolve the current generation result through an explicit handoff before inserting it into Cowart.
 
    Preferred resolution order:
 
-   - Use the exact local image path returned by the current image generation tool call when one is available.
-   - If no new file path is returned, inspect the current Codex session JSONL for the current request and extract the PNG/base64 payload from the latest `image_generation_call.result`, then write it to the timestamped output filename.
-   - Use `$CODEX_HOME/generated_images` only when you can prove the file was created by the current request, for example by matching its timestamp after this generation step. Never pick an older image merely because it is the newest file in a stale generated_images directory.
+   - Prefer an exact local path returned by the current image generation tool and pass it to `insert_cowart_image` as `imagePath`.
+   - If no path is available and the tool returns the current image as a base64-encoded `data:` URL or raw base64 payload, pass that exact result directly as `dataUrl` or `dataBase64`; include `mimeType` with `dataBase64` when available. Direct payloads are limited to 16 MiB of decoded image data.
+   - Provide exactly one of `imagePath`, `dataUrl`, or `dataBase64`. Never send multiple image sources in one insertion call.
+   - If the current result exceeds the direct-payload limit or exposes none of those supported handoffs, ask the active provider or user to save/export that exact result to an explicit project `OUTPUT_DIR` and then use the returned path. Do not split a bitmap across calls or retry the same oversized payload.
+   - Never inspect Codex session JSONL, guess files from `$CODEX_HOME/generated_images`, or scan unrelated caches to recover an image payload.
 
-   Before inserting the resolved file into Cowart, visually inspect the local bitmap and confirm it is the newly generated revised image for this screenshot, not a stale generated asset.
+   Before insertion, visually inspect the current result or its exact local file and confirm it is the newly generated revision for this screenshot, not a stale asset. Do not paste a data payload into logs or prose.
 
 6. Insert the revised image beside the original with Cowart MCP.
 
-   Prefer the Cowart MCP `insert_cowart_image` tool. Do not hand-write
+   Prefer the Cowart MCP `insert_cowart_image` tool and provide exactly one explicit image source. Do not hand-write
    tldraw `asset` / `shape` records or fractional `index` keys unless the MCP
    tool is unavailable. The tool copies the bitmap into the page-local assets
    folder, creates the tldraw image asset and image shape, generates a valid

@@ -9,7 +9,7 @@ Use this skill when the user wants an AI-generated image placed onto the Cowart 
 
 ## Preconditions
 
-Ensure the `cowart_mcp` tools required by this workflow are available. Do not call `render_cowart_canvas_widget` as a routine prerequisite: requests sent from the Cowart widget already have an open canvas, and the existing widget synchronizes inserted images from MCP-backed storage. If the user separately asks to open, reopen, or explicitly refresh the canvas, handle that request once with the canvas-opening workflow.
+Ensure the `cowart_safe_mcp` tools required by this workflow are available. Do not call `render_cowart_canvas_widget` as a routine prerequisite: requests sent from the Cowart widget already have an open canvas, and the existing widget synchronizes inserted images from MCP-backed storage. If the user separately asks to open, reopen, or explicitly refresh the canvas, handle that request once with the canvas-opening workflow. Every direct MCP call must pass the active workspace as `projectDir`; never use or infer the plugin repository as project storage.
 
 Cowart state is read and written through Cowart MCP tools, not through a localhost browser service.
 
@@ -77,17 +77,19 @@ meta flag. Support both shapes.
 
    If the image generation tool or model accepts size or aspect-ratio parameters, pass the closest supported option in addition to the prompt text. If only prompt text is available, the prompt text must still include `targetWidth`, `targetHeight`, and `targetAspectRatio`.
 
-   Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   Resolve the current generation result through an explicit handoff before inserting it into Cowart.
 
    Preferred resolution order:
 
-   - Use the exact local image path returned by the current image generation tool call when one is available.
-   - If no new file path is returned, inspect the current Codex session JSONL for the current request and extract the PNG/base64 payload from the latest `image_generation_call.result`, then write it to a timestamped output filename.
-   - Use `$CODEX_HOME/generated_images` only when you can prove the file was created by the current request, for example by matching its timestamp after this generation step. Never pick an older image merely because it is the newest file in a stale generated_images directory.
+   - Prefer an exact local path returned by the current image generation tool and pass it to `insert_cowart_image` as `imagePath`.
+   - If no path is available and the tool returns the current image as a base64-encoded `data:` URL or raw base64 payload, pass that exact result directly as `dataUrl` or `dataBase64`; include `mimeType` with `dataBase64` when available. Direct payloads are limited to 16 MiB of decoded image data.
+   - Provide exactly one of `imagePath`, `dataUrl`, or `dataBase64`. Never send multiple image sources in one insertion call.
+   - If the current result exceeds the direct-payload limit or exposes none of those supported handoffs, ask the active provider or user to save/export that exact result to an explicit project `OUTPUT_DIR` and then use the returned path. Do not split a bitmap across calls or retry the same oversized payload.
+   - Never inspect Codex session JSONL, guess files from `$CODEX_HOME/generated_images`, or scan unrelated caches to recover an image payload.
 
-   Before inserting the resolved file into Cowart, visually inspect the local bitmap and confirm it is the newly generated image for this request, not a stale generated asset.
+   Before insertion, visually inspect the current result or its exact local file and confirm it is the newly generated image for this request, not a stale asset. Do not paste a data payload into logs or prose.
 
-   For project-bound output, copy the resolved generated image into the selected page's asset folder:
+   Let `insert_cowart_image` validate and save the bitmap into the selected page's project-local asset folder:
 
    ```text
    canvas/pages/<page-id-without-page-prefix>/assets/
@@ -95,7 +97,7 @@ meta flag. Support both shapes.
 
 5. Insert the generated image as a new tldraw image shape.
 
-   For the holder replacement workflow, call `insert_cowart_image` with the holder id as `anchorShapeId` and leave `replaceAiImageHolder` unset or set it to `true`. The MCP tool will place the image exactly where the holder was and remove the holder shape:
+   For the holder replacement workflow, call `insert_cowart_image` with exactly one explicit image source, the holder id as `anchorShapeId`, and leave `replaceAiImageHolder` unset or set it to `true`. The MCP tool will place the image exactly where the holder was and remove the holder shape:
 
    - `type`: `image`
    - `parentId`: same as holder parent

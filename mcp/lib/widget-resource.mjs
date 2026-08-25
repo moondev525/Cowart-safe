@@ -284,6 +284,7 @@ function mcpHostBridgeScript(appVersion) {
   }
 
   window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
     const result = event.data?.params?.result;
     if (event.data?.method === "ui/notifications/tool-result" && result) {
       handleToolResult(result);
@@ -292,7 +293,7 @@ function mcpHostBridgeScript(appVersion) {
 
   try {
     mcpApp = new apps.App(
-      { name: "cowart", version: ${JSON.stringify(appVersion)} },
+      { name: "cowart-safe", version: ${JSON.stringify(appVersion)} },
       { availableDisplayModes: ["inline", "fullscreen"] },
       { autoResize: true },
     );

@@ -1,6 +1,6 @@
-# Cowart
+# Cowart Safe
 
-Cowart is a native infinite-canvas widget plugin for Codex. It brings a tldraw-powered canvas into Codex for visual thinking, annotation, image generation, and annotation-driven image edits. The canvas opens directly as an MCP widget, and its data is saved in the active user project under `canvas/` instead of inside the plugin repository.
+Cowart Safe is a locally hardened fork of Cowart. It keeps the native tldraw canvas for Codex while requiring an explicit project directory, confining canvas storage to that project, removing bundled analytics, and running generated HTML in an isolated sandbox. Upstream copyright and the MIT license are preserved.
 
 The repository also conforms to [Agent Plugins v1.0.0](https://agent-plugins.org/specification): root-level `plugin.json`, `skills/`, and `mcp.json` provide the portable plugin entry points, while `.codex-plugin/plugin.json`, `.mcp.json`, and `.agents/plugins/marketplace.json` retain Codex-specific interface and installation metadata.
 
@@ -11,10 +11,10 @@ The repository also conforms to [Agent Plugins v1.0.0](https://agent-plugins.org
 - Open a native tldraw infinite-canvas widget from Codex; normal use no longer opens a local page through a web browser or the in-app browser.
 - Persist canvas pages and image assets in the active project directory.
 - Create AI image slots on the canvas, enter a prompt directly, choose reference images, and let Codex generate an image that replaces the selected slot at the same position and aspect ratio.
-- Create a 16:9 `AI HTML` slot, generate a runnable single-file HTML page from a prompt and reference images, and embed it directly on the canvas for further editing and iteration.
+- Create a 16:9 `AI HTML` slot, generate a runnable single-file HTML page from a prompt and reference images, and embed it directly on the canvas for interactive preview, annotation, and iteration.
 - Create `AI Slides` to organize images and HTML into a deck, or ask Codex to generate a specified number of coordinated 16:9 HTML pages; preview the deck with thumbnails or play it fullscreen.
 - After annotating an image, submit the annotation screenshot directly from the canvas so Codex can generate a clean revised image beside the original.
-- Use Cowart MCP tools to read selection state, save the canvas, insert images or HTML, and save page-local assets.
+- Use Cowart MCP tools to read selection state, save the canvas, and insert images or HTML. Images can be handed off through an explicit local path, a base64 data URL, or raw base64 before being saved as page-local assets. Direct base64 payloads are limited to 16 MiB of decoded image data; use an explicit local path for larger images.
 
 ## Installation
 
@@ -26,10 +26,10 @@ The repository also conforms to [Agent Plugins v1.0.0](https://agent-plugins.org
 Send the following message to Codex:
 
 ```text
-Please install the Cowart Codex plugin through the Git marketplace bundled with its repository.
-First run codex plugin marketplace add zhongerxin/Cowart --ref main,
-then run codex plugin add cowart@cowart-github and use codex plugin list to confirm it is enabled.
-Cowart ships a self-contained MCP server and a prebuilt widget; it never runs npm install in the plugin cache and does not require new users to preinstall tldraw;
+Please install Cowart Safe through the Git marketplace bundled with this fork.
+First run codex plugin marketplace add moondev525/Cowart-safe --ref main,
+then run codex plugin add cowart-safe@cowart-safe-local and use codex plugin list to confirm it is enabled.
+Cowart Safe ships a self-contained MCP server and a prebuilt widget; it never runs npm install in the plugin cache and does not require new users to preinstall tldraw;
 do not install dependencies manually in the current repository, plugin cache, or marketplace snapshot.
 Do not clone the repository into the personal marketplace. When installation finishes, clearly remind me
 to completely quit and restart Codex once before using Cowart.
@@ -40,24 +40,24 @@ to completely quit and restart Codex once before using Cowart.
 First register the Cowart Git repository as a Codex marketplace:
 
 ```bash
-codex plugin marketplace add zhongerxin/Cowart --ref main
+codex plugin marketplace add moondev525/Cowart-safe --ref main
 ```
 
 Then install Cowart from that marketplace and verify it:
 
 ```bash
-codex plugin add cowart@cowart-github
+codex plugin add cowart-safe@cowart-safe-local
 codex plugin list
 ```
 
 You do not need to locate the plugin cache manually. Cowart's Git release tracks a self-contained MCP bundle and a prebuilt single-file widget. Codex can discover `render_cowart_canvas_widget` without running `npm install` or relying on `node_modules`, tldraw, npm, or network access inside the plugin cache. Development dependencies are used only by Cowart maintainers to regenerate release artifacts before publishing.
 
-If `cowart-github` is already registered, skip the first `marketplace add` command. After installation, completely quit and restart Codex once so the new skills, MCP tools, and release artifacts are fully loaded.
+If `cowart-safe-local` is already registered, skip the first `marketplace add` command. After installation, completely quit and restart Codex once so the new skills, MCP tools, and release artifacts are fully loaded.
 
 Codex automatically checks this Git marketplace when its plugin system starts and refreshes the installed Cowart plugin when the remote `main` branch changes. To check for an update immediately, run:
 
 ```bash
-codex plugin marketplace upgrade cowart-github
+codex plugin marketplace upgrade cowart-safe-local
 ```
 
 An update may replace the plugin cache. After updating, completely quit and restart Codex; Cowart loads the MCP and widget artifacts shipped with the release and does not install dependencies into the new cache.
@@ -99,7 +99,7 @@ Cowart sends the prompt, reference images, and selected `AI 图片` slot dimensi
 2. Enter a prompt in the generation panel below the slot. You can also choose or paste one or more reference images.
 3. Send the request. Codex generates a complete runnable single-file HTML page and embeds it into the selected `AI HTML` slot.
 
-The generated HTML is stored as an embedded canvas page in the current page's `assets/` directory. Select it to download a rendered image, edit text directly, continue revising the HTML with canvas annotations, or generate an image from the HTML and its annotations.
+The generated HTML is stored as an embedded canvas page in the current page's `assets/` directory. Select it to enter interactive preview, download a static rendering, continue revising the HTML with canvas annotations, or generate an image from the HTML and its annotations. Safe mode does not edit the iframe DOM directly; static rendering uses a separate script-free, form-disabled capture environment.
 
 ![Edit Cowart AI HTML](assets/edit-html.png)
 
@@ -109,7 +109,7 @@ The generated HTML is stored as an embedded canvas page in the current page's `a
 2. Drag images or HTML from the canvas into the Slides frame. You can also copy an image, select the Slides frame, and paste it; items are arranged horizontally in order.
 3. Selecting an empty Slides frame opens its generation panel. Describe the deck, optionally add reference images, and choose 3, 5, 10, or a custom number of pages. The default is 5 pages.
 4. After you send the request, Codex generates the requested number of visually and narratively coordinated standalone 16:9 HTML pages and appends them to the current Slides frame. The generation panel is hidden once the frame contains content.
-5. Select the Slides frame and click `演示 Slides` to preview and navigate with the thumbnail sidebar or enter fullscreen playback. In fullscreen, use the arrow keys, Space, or click static slide content to advance. Buttons, links, and form controls inside HTML remain interactive, and the playback controls stay at the top.
+5. Select the Slides frame and click `演示 Slides` to preview and navigate with the thumbnail sidebar or enter fullscreen playback. In fullscreen, use the arrow keys, Space, or click static slide content to advance. Local HTML buttons and controls remain interactive, but form submission is blocked by the safety sandbox; playback controls stay at the top.
 
 ![Present and navigate Cowart AI Slides](assets/view-slides.png)
 
@@ -125,9 +125,9 @@ Codex reads the notes and arrows in the screenshot, generates a clean revised im
 
 ## Skills
 
-- `cowart:cowart-open-canvas`: open the native Cowart canvas widget.
-- `cowart:cowart-image-gen`: receive the canvas prompt and reference images, replace the selected `AI 图片` slot with a generated image, or insert a generated image into the current page when no slot is selected.
-- `cowart:cowart-image-edit`: generate a revised image from a Cowart annotation screenshot submitted from the canvas or provided by the user.
+- `cowart-safe:cowart-open-canvas`: open the native Cowart Safe canvas widget.
+- `cowart-safe:cowart-image-gen`: receive the canvas prompt and reference images, replace the selected `AI 图片` slot with a generated image, or insert a generated image into the current page when no slot is selected.
+- `cowart-safe:cowart-image-edit`: generate a revised image from a Cowart annotation screenshot submitted from the canvas or provided by the user.
 
 ## Local Development
 

@@ -1,14 +1,14 @@
 {
-  "name": "cowart-github",
+  "name": "cowart-safe-local",
   "interface": {
-    "displayName": "Cowart GitHub"
+    "displayName": "Cowart Safe Local"
   },
   "plugins": [
     {
-      "name": "cowart",
+      "name": "cowart-safe",
       "source": {
         "source": "local",
-        "path": "."
+        "path": "./"
       },
       "policy": {
         "installation": "AVAILABLE",

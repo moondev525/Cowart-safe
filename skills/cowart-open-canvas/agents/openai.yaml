@@ -1,4 +1,4 @@
 interface:
   display_name: "Cowart Open Canvas"
   short_description: "Open the Cowart infinite-canvas widget"
-  default_prompt: "Use $cowart:cowart-open-canvas to open the Cowart infinite-canvas widget."
+  default_prompt: "Use $cowart-safe:cowart-open-canvas to open the Cowart Safe infinite-canvas widget."

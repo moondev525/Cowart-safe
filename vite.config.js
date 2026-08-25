@@ -1,15 +1,80 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { randomUUID } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
+import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
-const projectDir = resolve(process.env.COWART_PROJECT_DIR ?? process.cwd())
+const pluginRoot = dirname(fileURLToPath(import.meta.url))
+const isWidgetBuild = process.env.COWART_WIDGET_BUILD === '1'
+
+function isSameOrChildPath(rootPath, candidatePath) {
+  const pathFromRoot = relative(resolve(rootPath), resolve(candidatePath))
+  return pathFromRoot === '' || (
+    pathFromRoot !== '..' &&
+    !pathFromRoot.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromRoot)
+  )
+}
+
+function realExistingAncestor(candidatePath) {
+  let currentPath = resolve(candidatePath)
+  while (true) {
+    try {
+      return {
+        logicalPath: currentPath,
+        realPath: realpathSync.native(currentPath)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+      const parentPath = dirname(currentPath)
+      if (parentPath === currentPath) throw error
+      currentPath = parentPath
+    }
+  }
+}
+
+const requestedProjectDir = process.env.COWART_PROJECT_DIR?.trim()
+if (!requestedProjectDir && !isWidgetBuild) {
+  throw new Error('Cowart Safe development mode requires COWART_PROJECT_DIR or scripts/start-canvas.sh <projectDir>.')
+}
+const projectDir = resolve(requestedProjectDir || join(tmpdir(), 'cowart-widget-build'))
 const cowartAppVersion = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
 ).version
 const canvasDir = resolve(process.env.COWART_CANVAS_DIR ?? join(projectDir, 'canvas'))
+const canvasRelativePath = relative(projectDir, canvasDir)
+if (
+  !canvasRelativePath ||
+  canvasRelativePath === '..' ||
+  canvasRelativePath.startsWith(`..${sep}`)
+) {
+  throw new Error('Cowart Safe canvasDir must be a child of projectDir.')
+}
+
+if (!isWidgetBuild) {
+  const projectStat = statSync(projectDir)
+  if (!projectStat.isDirectory()) {
+    throw new Error(`Cowart Safe projectDir must be an existing directory: ${projectDir}`)
+  }
+  const realProjectDir = realpathSync.native(projectDir)
+  const realCanvasAncestor = realExistingAncestor(canvasDir)
+  const existingChildResolvesToProjectRoot =
+    relative(projectDir, realCanvasAncestor.logicalPath) !== '' &&
+    relative(realProjectDir, realCanvasAncestor.realPath) === ''
+  if (
+    !isSameOrChildPath(realProjectDir, realCanvasAncestor.realPath) ||
+    existingChildResolvesToProjectRoot
+  ) {
+    throw new Error(`Cowart Safe canvasDir resolves through a symlink or junction outside projectDir or back to projectDir itself: ${canvasDir}`)
+  }
+  const realPluginRoot = realpathSync.native(pluginRoot)
+  if (isSameOrChildPath(realPluginRoot, realProjectDir)) {
+    throw new Error('Cowart Safe projectDir must not be inside the plugin source directory.')
+  }
+}
 const canvasFile = join(canvasDir, 'cowart-canvas.json')
 const selectionFile = join(canvasDir, 'cowart-selection.json')
 const viewStateFile = join(canvasDir, 'cowart-view-state.json')

@@ -1,15 +1,15 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "cowart",
-  "version": "0.1.27",
-  "description": "A native tldraw canvas for visual thinking and image workflows. Use cowart_mcp to open the canvas when requested and reuse an existing widget for subsequent Cowart work.",
+  "name": "cowart-safe",
+  "version": "0.1.27-safe.1",
+  "description": "A locally hardened tldraw canvas for visual thinking and image workflows. Use cowart_safe_mcp with an explicit project directory.",
   "author": {
     "name": "ZHONG XIN",
     "email": "zhongxin123456@gmail.com",
     "url": "https://www.jiqiren.ai"
   },
   "homepage": "https://www.jiqiren.ai",
-  "repository": "https://github.com/zhongerxin/Cowart",
+  "repository": "https://github.com/moondev525/Cowart-safe",
   "license": "MIT",
   "keywords": [
     "canvas",

@@ -13,7 +13,8 @@ export COWART_CANVAS_DIR="$CANVAS_DIR"
 cd "$ROOT_DIR"
 
 if [ ! -d node_modules ] || [ ! -x node_modules/.bin/vite ]; then
-  npm install
+  echo "Cowart Safe dependencies are missing. Run 'npm ci' explicitly after reviewing package-lock.json." >&2
+  exit 1
 fi
 
 echo "Cowart canvas: http://127.0.0.1:${PORT}"

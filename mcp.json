@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "cowart_mcp": {
+    "cowart_safe_mcp": {
       "type": "stdio",
       "command": "node",
       "args": [

@@ -30,7 +30,7 @@ function currentWidgetPayload() {
 
 function hasWidgetStorageTarget() {
   const payload = currentWidgetPayload()
-  return Boolean(payload.projectDir || payload.canvasDir)
+  return Boolean(payload.projectDir)
 }
 
 function serverToolArgs(extra = {}) {
@@ -62,7 +62,7 @@ async function waitForWidgetPayload(signal) {
 
     const timer = window.setTimeout(() => {
       cleanup()
-      reject(new Error('Cowart widget storage target was not ready. Refusing to read or write without projectDir/canvasDir.'))
+      reject(new Error('Cowart widget storage target was not ready. Refusing to read or write without projectDir.'))
     }, WIDGET_PAYLOAD_TIMEOUT_MS)
     const cleanup = () => {
       window.clearTimeout(timer)

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, platform, tmpdir } from "node:os";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -33,10 +33,6 @@ import {
 } from "./lib/canvas-storage.mjs";
 import { pluginPath } from "./lib/plugin-root.mjs";
 import { inlineWidget, registerWidgetResource } from "./lib/widget-resource.mjs";
-import {
-  COWART_GA4_EVENT_NAMES,
-  sendCowartGa4Event,
-} from "./lib/ga4-analytics.mjs";
 
 const TOOL_RENDER_WIDGET = "render_cowart_canvas_widget";
 const TOOL_GET_CANVAS_STATE = "get_cowart_canvas_state";
@@ -50,7 +46,6 @@ const TOOL_SAVE_REFERENCE_IMAGE = "save_cowart_reference_image";
 const TOOL_READ_PAGE_ASSET = "read_cowart_page_asset";
 const TOOL_DOWNLOAD_FILE = "download_cowart_file";
 const TOOL_COPY_IMAGE_TO_CLIPBOARD = "copy_cowart_image_to_clipboard";
-const TOOL_TRACK_ANALYTICS = "track_cowart_analytics_event";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,52 +53,20 @@ const PAGE_ID_PREFIX = "page:";
 const COWART_WIDGET_URI = "ui://widget/cowart/canvas.html";
 const COWART_HTML_DRAFT_URL_ORIGIN = "http://cowart.local";
 const DEFAULT_DISPLAY_MODE = "fullscreen";
-const COWART_GOOGLE_DOMAINS = [
-  "https://www.google-analytics.com",
-  "https://region1.google-analytics.com",
-  "https://analytics.google.com",
-  "https://www.googletagmanager.com",
-  "https://stats.g.doubleclick.net",
-  "https://www.doubleclick.net",
-  "https://pagead2.googlesyndication.com",
-  "https://www.googleadservices.com",
-  "https://www.google.com",
-  "https://www.google.cn",
-  "https://www.gstatic.com",
-  "https://www.googleapis.com",
-  "https://*.google-analytics.com",
-  "https://*.analytics.google.com",
-  "https://*.googletagmanager.com",
-  "https://*.doubleclick.net",
-  "https://*.googlesyndication.com",
-  "https://*.googleadservices.com",
-  "https://*.google.com",
-  "https://*.google.cn",
-  "https://*.gstatic.com",
-  "https://*.googleapis.com",
-  "https://*.merchant-center-analytics.goog",
-];
-const COWART_CONNECT_DOMAINS = [...COWART_GOOGLE_DOMAINS];
-const COWART_RESOURCE_DOMAINS = [
-  "data:",
-  "blob:",
-  ...COWART_GOOGLE_DOMAINS,
-];
-const COWART_FRAME_DOMAINS = [
-  "data:",
-  "blob:",
-  "https://www.googletagmanager.com",
-  "https://www.doubleclick.net",
-  "https://www.google.com",
-  "https://www.google.cn",
-  "https://*.googletagmanager.com",
-  "https://*.doubleclick.net",
-  "https://*.google.com",
-  "https://*.google.cn",
-];
+const COWART_CONNECT_DOMAINS = [];
+const COWART_RESOURCE_DOMAINS = ["data:", "blob:"];
+const COWART_FRAME_DOMAINS = ["data:", "blob:"];
+const MAX_COWART_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_COWART_DIRECT_IMAGE_BYTES = 16 * 1024 * 1024;
+const MAX_COWART_ENCODED_IMAGE_CHARS = Math.ceil(MAX_COWART_DIRECT_IMAGE_BYTES * 4 / 3) + 4;
+const MAX_COWART_IMAGE_DIMENSION = 32_768;
+const MAX_COWART_IMAGE_PIXELS = 268_435_456;
+const MAX_COWART_HTML_BYTES = 5 * 1024 * 1024;
+const MAX_COWART_DOWNLOAD_BYTES = 128 * 1024 * 1024;
+const MAX_COWART_FILE_NAME_CHARS = 180;
 
 const projectArgsSchema = {
-  projectDir: z.string().trim().optional(),
+  projectDir: z.string().trim().min(1),
   canvasDir: z.string().trim().optional(),
 };
 
@@ -120,14 +83,13 @@ const server = new McpServer(
   },
   {
     instructions:
-      "cowart_mcp is Cowart's core canvas MCP server. Use render_cowart_canvas_widget when the user asks to open, reopen, or explicitly refresh the native canvas. When a Cowart widget is already open, reuse it and use get_cowart_selection for persisted widget selection, save_cowart_reference_image for widget-provided reference images, read_cowart_page_asset for lazy widget asset loading, download_cowart_file to save widget-requested files into the user's Downloads folder, insert_cowart_image to place or replace bitmap assets, and insert_cowart_html_draft to save and embed HTML drafts without rendering another widget tab.",
+      "cowart_safe_mcp is Cowart Safe's project-bound canvas MCP server. Every direct tool call requires the active workspace as projectDir. Use render_cowart_canvas_widget only when the user asks to open, reopen, or explicitly refresh the native canvas. Reuse an existing widget for later state, image, and HTML operations.",
   },
 );
 
 registerCowartWidget(server);
 registerCowartStateTools(server);
 registerCowartImageTools(server);
-registerCowartAnalyticsTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
@@ -143,20 +105,38 @@ function isSafeChildPath(parent, child) {
 
 function sanitizeFileName(name, fallbackName = "image.png") {
   const rawName = basename(String(name || fallbackName));
-  const extension = extname(rawName) || extname(fallbackName) || ".png";
-  const baseName = rawName
+  const cleanedExtension = (extname(rawName) || extname(fallbackName) || ".png")
+    .replace(/[^a-zA-Z0-9.]+/g, "")
+    .slice(0, 16);
+  const fallbackExtension = extname(fallbackName).replace(/[^a-zA-Z0-9.]+/g, "");
+  const extension = /^\.[a-zA-Z0-9]{1,15}$/u.test(cleanedExtension)
+    ? cleanedExtension
+    : /^\.[a-zA-Z0-9]{1,15}$/u.test(fallbackExtension)
+      ? fallbackExtension
+      : ".png";
+  const maximumBaseLength = Math.max(1, MAX_COWART_FILE_NAME_CHARS - extension.length);
+  let baseName = rawName
     .slice(0, rawName.length - extname(rawName).length)
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+|-+$/g, "")
+    .replace(/[. ]+$/g, "")
+    .slice(0, maximumBaseLength);
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(baseName)) {
+    baseName = `_${baseName}`.slice(0, maximumBaseLength);
+  }
   return `${baseName || "image"}${extension}`;
 }
 
 function sanitizeDirectoryName(name, fallbackName = "Cowart Export") {
-  return basename(String(name || fallbackName))
+  let directoryName = basename(String(name || fallbackName))
     .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
     .replace(/[. ]+$/g, "")
     .trim()
     .slice(0, 120) || fallbackName;
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(directoryName)) {
+    directoryName = `_${directoryName}`.slice(0, 120);
+  }
+  return directoryName;
 }
 
 function sanitizeHtmlFileName(name, fallbackName = "draft.html") {
@@ -430,42 +410,193 @@ function choosePlacement({ store, pageId, parentId, anchorShape, width, height, 
   return { x, y, w: width, h: height };
 }
 
-async function getImageDimensions(filePath) {
-  const buffer = await readFile(filePath);
-  if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {
-    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+function decodeStrictBase64(value, label) {
+  const encoded = String(value || "").replace(/\s+/g, "");
+  if (!encoded || encoded.length > MAX_COWART_ENCODED_IMAGE_CHARS) {
+    throw new Error(`${label} is empty or exceeds the encoded image safety limit.`);
   }
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/u.test(encoded)) {
+    throw new Error(`${label} is not valid base64.`);
+  }
+  const canonicalInput = encoded.replace(/=+$/u, "").replace(/-/g, "+").replace(/_/g, "/");
+  if (canonicalInput.length % 4 === 1) throw new Error(`${label} is not valid base64.`);
+  const paddedInput = canonicalInput.padEnd(canonicalInput.length + ((4 - canonicalInput.length % 4) % 4), "=");
+  const buffer = Buffer.from(paddedInput, "base64");
+  if (buffer.length > MAX_COWART_DIRECT_IMAGE_BYTES) {
+    throw new Error(`${label} exceeds the ${MAX_COWART_DIRECT_IMAGE_BYTES} byte direct-payload safety limit.`);
+  }
+  const canonicalOutput = buffer.toString("base64").replace(/=+$/u, "");
+  if (canonicalInput !== canonicalOutput) throw new Error(`${label} is not canonical base64.`);
+  return buffer;
+}
+
+function normalizedImageMimeType(value) {
+  const mimeType = nonEmptyString(value)?.toLowerCase();
+  if (mimeType === "image/jpg" || mimeType === "image/pjpeg") return "image/jpeg";
+  if (mimeType === "image/x-png") return "image/png";
+  return mimeType;
+}
+
+function imageInfoFromBuffer(buffer, label = "image payload") {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error(`${label} is empty.`);
+  if (buffer.length > MAX_COWART_IMAGE_BYTES) {
+    throw new Error(`${label} exceeds the ${MAX_COWART_IMAGE_BYTES} byte safety limit.`);
+  }
+
+  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (buffer.length >= 24 && buffer.subarray(0, 8).equals(pngSignature)) {
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    if (width > 0 && height > 0) return { width, height, mimeType: "image/png", extension: ".png" };
+  }
+
   if (buffer.length >= 10 && buffer[0] === 0xff && buffer[1] === 0xd8) {
     let offset = 2;
-    while (offset < buffer.length) {
-      if (buffer[offset] !== 0xff) break;
+    while (offset + 8 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
       const marker = buffer[offset + 1];
+      if (marker === 0xd8 || marker === 0xd9) {
+        offset += 2;
+        continue;
+      }
+      if (offset + 3 >= buffer.length) break;
       const size = buffer.readUInt16BE(offset + 2);
       if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-        return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+        const width = buffer.readUInt16BE(offset + 7);
+        const height = buffer.readUInt16BE(offset + 5);
+        if (width > 0 && height > 0) return { width, height, mimeType: "image/jpeg", extension: ".jpg" };
       }
+      if (size < 2) break;
       offset += 2 + size;
     }
   }
+
+  if (buffer.length >= 10 && (buffer.toString("ascii", 0, 6) === "GIF87a" || buffer.toString("ascii", 0, 6) === "GIF89a")) {
+    const width = buffer.readUInt16LE(6);
+    const height = buffer.readUInt16LE(8);
+    if (width > 0 && height > 0) return { width, height, mimeType: "image/gif", extension: ".gif" };
+  }
+
   if (buffer.length >= 30 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
     const chunk = buffer.toString("ascii", 12, 16);
     if (chunk === "VP8X") {
       return {
         width: 1 + buffer.readUIntLE(24, 3),
         height: 1 + buffer.readUIntLE(27, 3),
+        mimeType: "image/webp",
+        extension: ".webp",
+      };
+    }
+    if (chunk === "VP8L" && buffer.length >= 25 && buffer[20] === 0x2f) {
+      const bits = buffer.readUInt32LE(21);
+      return {
+        width: (bits & 0x3fff) + 1,
+        height: ((bits >>> 14) & 0x3fff) + 1,
+        mimeType: "image/webp",
+        extension: ".webp",
+      };
+    }
+    if (
+      chunk === "VP8 " &&
+      buffer.length >= 30 &&
+      buffer[23] === 0x9d &&
+      buffer[24] === 0x01 &&
+      buffer[25] === 0x2a
+    ) {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+        mimeType: "image/webp",
+        extension: ".webp",
       };
     }
   }
-  throw new Error(`Could not read image dimensions for ${filePath}. Pass displayWidth/displayHeight and use a PNG/JPEG/WebP source.`);
+
+  throw new Error(`${label} is not a supported PNG, JPEG, GIF, or WebP bitmap, or its dimensions are invalid.`);
+}
+
+function parseImageDataUrl(dataUrl) {
+  const match = /^data:([^;,]+)?((?:;[^,]*)?),(.*)$/s.exec(String(dataUrl || ""));
+  if (!match) throw new Error("Invalid image dataUrl.");
+  const declaredMimeType = normalizedImageMimeType(match[1]);
+  const parameters = match[2] || "";
+  const payload = match[3] || "";
+  if (!/;base64(?:;|$)/i.test(parameters)) {
+    throw new Error("Cowart image dataUrl must use base64 encoding.");
+  }
+  const buffer = decodeStrictBase64(payload, "image dataUrl payload");
+  return { buffer, declaredMimeType };
+}
+
+async function resolveCowartImageInput(args = {}) {
+  const imagePath = nonEmptyString(args.imagePath);
+  const dataUrl = nonEmptyString(args.dataUrl);
+  const dataBase64 = nonEmptyString(args.dataBase64);
+  const suppliedSources = [imagePath, dataUrl, dataBase64].filter(Boolean);
+  if (suppliedSources.length !== 1) {
+    throw new Error("Provide exactly one Cowart image source: imagePath, dataUrl, or dataBase64.");
+  }
+
+  let sourceImagePath = null;
+  let sourceType = null;
+  let buffer = null;
+  let declaredMimeType = null;
+  if (imagePath) {
+    sourceType = "imagePath";
+    sourceImagePath = pathResolve(imagePath);
+    const sourceStat = await stat(sourceImagePath);
+    if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourceImagePath}`);
+    if (sourceStat.size > MAX_COWART_IMAGE_BYTES) {
+      throw new Error(`imagePath exceeds the ${MAX_COWART_IMAGE_BYTES} byte safety limit.`);
+    }
+    buffer = await readFile(sourceImagePath);
+  } else if (dataUrl) {
+    sourceType = "dataUrl";
+    ({ buffer, declaredMimeType } = parseImageDataUrl(dataUrl));
+  } else {
+    sourceType = "dataBase64";
+    buffer = decodeStrictBase64(dataBase64, "dataBase64");
+  }
+
+  const imageInfo = imageInfoFromBuffer(buffer, sourceImagePath || sourceType);
+  if (
+    imageInfo.width > MAX_COWART_IMAGE_DIMENSION ||
+    imageInfo.height > MAX_COWART_IMAGE_DIMENSION ||
+    imageInfo.width * imageInfo.height > MAX_COWART_IMAGE_PIXELS
+  ) {
+    throw new Error(
+      `Cowart image dimensions exceed the safety limit: ${imageInfo.width}x${imageInfo.height}.`,
+    );
+  }
+  const requestedMimeType = normalizedImageMimeType(args.mimeType);
+  for (const [label, mimeType] of [["dataUrl", declaredMimeType], ["mimeType", requestedMimeType]]) {
+    if (mimeType && mimeType !== imageInfo.mimeType) {
+      throw new Error(`${label} declares ${mimeType}, but the bitmap signature is ${imageInfo.mimeType}.`);
+    }
+  }
+
+  const fallbackName = `cowart-image-${Date.now()}${imageInfo.extension}`;
+  const requestedFileName = nonEmptyString(args.fileName) || (sourceImagePath ? basename(sourceImagePath) : fallbackName);
+  let fileName = sanitizeFileName(requestedFileName, fallbackName);
+  if (mimeTypeForFile(fileName) !== imageInfo.mimeType) {
+    fileName = `${fileName.slice(0, fileName.length - extname(fileName).length)}${imageInfo.extension}`;
+  }
+
+  return {
+    buffer,
+    fileName,
+    imageInfo,
+    sourceImagePath,
+    sourceType,
+  };
 }
 
 async function insertCowartImage(args = {}) {
-  const imagePath = nonEmptyString(args.imagePath);
-  if (!imagePath) throw new Error("imagePath is required.");
-
-  const sourceImagePath = pathResolve(imagePath);
-  const sourceStat = await stat(sourceImagePath);
-  if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourceImagePath}`);
+  const imageInput = await resolveCowartImageInput(args);
+  const { buffer: sourceBuffer, fileName: sourceFileName, imageInfo, sourceImagePath, sourceType } = imageInput;
 
   const canvasState = await readCowartCanvasState(args, { hydrateAssets: false });
   const snapshot = canvasState.snapshot;
@@ -486,7 +617,7 @@ async function insertCowartImage(args = {}) {
     Object.values(store).find((record) => record?.typeName === "page")?.id;
   if (!pageId || !store[pageId]) throw new Error("Could not determine target pageId.");
 
-  const imageSize = await getImageDimensions(sourceImagePath);
+  const imageSize = { width: imageInfo.width, height: imageInfo.height };
   const anchorBounds = anchorShape ? pageBoundsForShape(store, anchorShape) : null;
   const shouldTargetAiImageHolder = args.matchAnchor !== false && isAiImageHolderShape(anchorShape) && anchorBounds;
   const shouldReplaceAiImageHolder = shouldTargetAiImageHolder && args.replaceAiImageHolder !== false;
@@ -529,7 +660,7 @@ async function insertCowartImage(args = {}) {
   if (!isSafeChildPath(resolveCanvasDir(args), assetsDir)) {
     throw new Error(`Unsafe page assets directory: ${assetsDir}`);
   }
-  const { fileName, filePath } = await uniqueFilePath(assetsDir, args.fileName || basename(sourceImagePath));
+  const { fileName, filePath } = await uniqueFilePath(assetsDir, sourceFileName);
   const recordSeed = sanitizeIdPart(fileName);
   const assetId = uniqueRecordId(store, "asset", recordSeed);
   const shapeId = uniqueRecordId(store, "shape", recordSeed);
@@ -540,7 +671,7 @@ async function insertCowartImage(args = {}) {
   const index = shouldReplaceAiImageHolder && typeof anchorShape?.index === "string"
     ? anchorShape.index
     : chooseIndex(store, parentId);
-  const mimeType = mimeTypeForFile(fileName);
+  const mimeType = imageInfo.mimeType;
 
   const assetRecord = {
     id: assetId,
@@ -551,9 +682,9 @@ async function insertCowartImage(args = {}) {
       src: pageAssetUrl(pageId, fileName),
       w: imageSize.width,
       h: imageSize.height,
-      fileSize: sourceStat.size,
+      fileSize: sourceBuffer.length,
       mimeType,
-      isAnimated: false,
+      isAnimated: mimeType === "image/gif",
     },
     meta: args.assetMeta && typeof args.assetMeta === "object" ? args.assetMeta : {},
   };
@@ -599,7 +730,7 @@ async function insertCowartImage(args = {}) {
 
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
-    await copyFile(sourceImagePath, filePath);
+    await writeFile(filePath, sourceBuffer);
     for (const replacedShapeId of replacedShapeIds) {
       delete store[replacedShapeId];
     }
@@ -627,6 +758,7 @@ async function insertCowartImage(args = {}) {
     shapeId,
     index,
     sourceImagePath,
+    sourceType,
     assetFile: filePath,
     assetUrl: assetRecord.props.src,
     imageSize,
@@ -648,6 +780,9 @@ async function insertCowartHtmlDraft(args = {}) {
   const finalHtml = htmlContent ?? await readFile(sourceHtmlPath, "utf8");
   if (!nonEmptyString(finalHtml)) {
     throw new Error("HTML draft content is empty.");
+  }
+  if (Buffer.byteLength(finalHtml, "utf8") > MAX_COWART_HTML_BYTES) {
+    throw new Error(`HTML draft exceeds the ${MAX_COWART_HTML_BYTES} byte safety limit.`);
   }
   if (sourceHtmlPath) {
     const sourceStat = await stat(sourceHtmlPath);
@@ -894,6 +1029,9 @@ async function downloadCowartFile(args = {}) {
   }
 
   if (!buffer.length) throw new Error("Cowart download data is empty.");
+  if (buffer.length > MAX_COWART_DOWNLOAD_BYTES) {
+    throw new Error(`Cowart download data exceeds the ${MAX_COWART_DOWNLOAD_BYTES} byte safety limit.`);
+  }
 
   const downloadsDir = join(homedir(), "Downloads");
   const requestedName = sanitizeFileName(
@@ -918,9 +1056,7 @@ async function downloadCowartFile(args = {}) {
     throw new Error("Invalid Cowart download directory.");
   }
   await mkdir(targetDir, { recursive: true });
-  const { fileName, filePath } = args.overwrite === true
-    ? { fileName: requestedName, filePath: join(targetDir, requestedName) }
-    : await uniqueFilePath(targetDir, requestedName);
+  const { fileName, filePath } = await uniqueFilePath(targetDir, requestedName);
   await writeFile(filePath, buffer);
 
   return {
@@ -951,6 +1087,9 @@ async function copyCowartImageToClipboard(args = {}) {
   }
 
   if (!buffer.length) throw new Error("Cowart clipboard image data is empty.");
+  if (buffer.length > MAX_COWART_IMAGE_BYTES) {
+    throw new Error(`Cowart clipboard image exceeds the ${MAX_COWART_IMAGE_BYTES} byte safety limit.`);
+  }
   if (mimeType !== "image/png") throw new Error(`Cowart clipboard only supports image/png, received ${mimeType}.`);
   if (buffer.length < 8 || !buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     throw new Error("Cowart clipboard data is not a valid PNG image.");
@@ -1108,76 +1247,6 @@ function registerCowartWidget(mcpServer) {
           },
         },
       };
-    },
-  );
-}
-
-function registerCowartAnalyticsTools(mcpServer) {
-  registerAppTool(
-    mcpServer,
-    TOOL_TRACK_ANALYTICS,
-    {
-      title: "Track Cowart analytics event",
-      description:
-        "Use this when the Cowart widget records an anonymous product-usage event in Google Analytics.",
-      inputSchema: {
-        clientId: z.string().trim().min(1).max(128),
-        eventName: z.enum(COWART_GA4_EVENT_NAMES),
-        appVersion: z.string().trim().min(1).max(32),
-        parameters: z.object({
-          annotation_type: z.enum(["arrow"]).optional(),
-          ai_type: z.enum(["image", "html", "slides"]).optional(),
-          has_reference: z.enum(["yes", "no"]).optional(),
-          page_count: z.number().int().min(1).max(100).optional(),
-          prompt_type: z.enum([
-            "ai_image",
-            "ai_html",
-            "ai_slides",
-            "annotation_edit",
-            "annotation_html",
-            "slides_annotation_edit",
-            "html_annotation_edit",
-            "html_annotation_image",
-            "other",
-          ]).optional(),
-        }).optional(),
-      },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
-      _meta: {
-        ui: {
-          visibility: ["app"],
-        },
-        "openai/widgetAccessible": true,
-      },
-    },
-    async ({ clientId, eventName, appVersion, parameters }) => {
-      try {
-        const result = await sendCowartGa4Event({
-          clientId,
-          eventName,
-          appVersion,
-          parameters,
-        });
-        return {
-          content: [],
-          structuredContent: result,
-        };
-      } catch (error) {
-        console.warn(`Cowart analytics delivery failed: ${error instanceof Error ? error.message : String(error)}`);
-        return {
-          content: [],
-          structuredContent: {
-            configured: true,
-            delivered: false,
-            status: null,
-          },
-        };
-      }
     },
   );
 }
@@ -1406,13 +1475,12 @@ function registerCowartImageTools(mcpServer) {
       inputSchema: {
         ...projectArgsSchema,
         assetUrl: z.string().trim().optional(),
-        fileName: z.string().trim().optional(),
+        fileName: z.string().trim().max(MAX_COWART_FILE_NAME_CHARS).optional(),
         dataUrl: z.string().optional(),
         dataBase64: z.string().optional(),
         mimeType: z.string().trim().optional(),
         directoryName: z.string().trim().optional(),
         subdirectory: z.string().trim().optional(),
-        overwrite: z.boolean().optional(),
         uniqueDirectory: z.boolean().optional(),
       },
       annotations: {
@@ -1447,7 +1515,7 @@ function registerCowartImageTools(mcpServer) {
         holderShapeId: z.string().trim().optional(),
         anchorShapeId: z.string().trim().optional(),
         pageId: z.string().trim().optional(),
-        fileName: z.string().trim().optional(),
+        fileName: z.string().trim().max(MAX_COWART_FILE_NAME_CHARS).optional(),
         dataUrl: z.string().optional(),
         dataBase64: z.string().optional(),
         mimeType: z.string().trim().optional(),
@@ -1486,7 +1554,7 @@ function registerCowartImageTools(mcpServer) {
         draftShapeId: z.string().trim().optional(),
         anchorShapeId: z.string().trim().optional(),
         pageId: z.string().trim().optional(),
-        fileName: z.string().trim().optional(),
+        fileName: z.string().trim().max(MAX_COWART_FILE_NAME_CHARS).optional(),
         placement: z.enum(["right", "left", "below"]).optional(),
         margin: z.number().optional(),
         matchAnchor: z.boolean().optional(),
@@ -1557,16 +1625,19 @@ function registerCowartImageTools(mcpServer) {
     {
       title: "Insert Cowart Image",
       description:
-        "Copy a local bitmap into a Cowart page-local assets folder, create a tldraw image asset and shape, replace a targeted AI image holder by default, otherwise place it beside an anchor or clear page area, and save the project-backed Cowart canvas.",
+        "Accept exactly one explicit bitmap source (imagePath, dataUrl, or dataBase64), validate its signature and size, save it with a unique name in the project-local Cowart assets folder, create a tldraw image asset and shape, and replace a targeted AI image holder or place the image beside an anchor.",
       inputSchema: {
-        imagePath: z.string().trim(),
-        projectDir: z.string().trim().optional(),
+        imagePath: z.string().trim().max(4096).optional(),
+        dataUrl: z.string().max(MAX_COWART_ENCODED_IMAGE_CHARS + 256).optional(),
+        dataBase64: z.string().max(MAX_COWART_ENCODED_IMAGE_CHARS).optional(),
+        mimeType: z.string().trim().max(128).optional(),
+        projectDir: z.string().trim().min(1),
         canvasDir: z.string().trim().optional(),
         cowartUrl: z.string().trim().optional(),
         pageId: z.string().trim().optional(),
         anchorShapeId: z.string().trim().optional(),
         sourceShapeId: z.string().trim().optional(),
-        fileName: z.string().trim().optional(),
+        fileName: z.string().trim().max(MAX_COWART_FILE_NAME_CHARS).optional(),
         placement: z.enum(["right", "left", "below"]).optional(),
         margin: z.number().optional(),
         matchAnchor: z.boolean().optional(),

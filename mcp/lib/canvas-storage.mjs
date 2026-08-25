@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const PAGE_ID_PREFIX = "page:";
 const GLOBAL_ASSETS_ROUTE = "/assets/";
 const PAGE_ASSETS_ROUTE = "/page-assets/";
 const CANVAS_FILE_NAME = "cowart-canvas.json";
+const MAX_COWART_ASSET_BYTES = 64 * 1024 * 1024;
+const MAX_COWART_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+const MAX_COWART_ASSET_FILE_NAME_CHARS = 180;
 
 const mimeTypes = new Map([
   [".apng", "image/apng"],
@@ -28,18 +32,75 @@ export function pathResolve(value) {
   return resolve(String(value));
 }
 
+function isSameOrChildPath(rootPath, candidatePath) {
+  const pathFromRoot = relative(pathResolve(rootPath), pathResolve(candidatePath));
+  return pathFromRoot === "" || (
+    pathFromRoot !== ".." &&
+    !pathFromRoot.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromRoot)
+  );
+}
+
+function realExistingAncestor(candidatePath) {
+  let currentPath = pathResolve(candidatePath);
+  while (true) {
+    try {
+      return {
+        logicalPath: currentPath,
+        realPath: realpathSync.native(currentPath),
+      };
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parentPath = dirname(currentPath);
+      if (parentPath === currentPath) throw error;
+      currentPath = parentPath;
+    }
+  }
+}
+
 export function resolveCowartPaths(args = {}) {
   const explicitProjectDir = nonEmptyString(args.projectDir);
   const explicitCanvasDir = nonEmptyString(args.canvasDir);
   const envProjectDir = nonEmptyString(process.env.COWART_PROJECT_DIR);
   const envCanvasDir = nonEmptyString(process.env.COWART_CANVAS_DIR);
 
-  const projectDir = pathResolve(explicitProjectDir || envProjectDir || process.cwd());
+  const selectedProjectDir = explicitProjectDir || envProjectDir;
+  if (!selectedProjectDir) {
+    throw new Error("Cowart requires an explicit projectDir or COWART_PROJECT_DIR; it will not use the plugin or process working directory implicitly.");
+  }
+
+  const projectDir = pathResolve(selectedProjectDir);
+  const projectStat = statSync(projectDir);
+  if (!projectStat.isDirectory()) {
+    throw new Error(`Cowart projectDir must be an existing directory: ${projectDir}`);
+  }
+  const realProjectDir = realpathSync.native(projectDir);
   const canvasDir = explicitCanvasDir
     ? pathResolve(explicitCanvasDir)
     : envCanvasDir
       ? pathResolve(envCanvasDir)
       : join(projectDir, "canvas");
+
+  if (canvasDir === projectDir || !isSameOrChildPath(projectDir, canvasDir)) {
+    throw new Error(`Cowart canvasDir must be a child of projectDir. projectDir=${projectDir}; canvasDir=${canvasDir}`);
+  }
+  const realCanvasAncestor = realExistingAncestor(canvasDir);
+  const existingChildResolvesToProjectRoot = (
+    relative(projectDir, realCanvasAncestor.logicalPath) !== "" &&
+    relative(realProjectDir, realCanvasAncestor.realPath) === ""
+  );
+  if (
+    !isSameOrChildPath(realProjectDir, realCanvasAncestor.realPath) ||
+    existingChildResolvesToProjectRoot
+  ) {
+    throw new Error(`Cowart canvasDir resolves through a symlink or junction outside projectDir or back to projectDir itself. canvasDir=${canvasDir}`);
+  }
+
+  const pluginRoot = nonEmptyString(process.env.COWART_PLUGIN_ROOT);
+  const realPluginRoot = pluginRoot ? realpathSync.native(pathResolve(pluginRoot)) : null;
+  if (realPluginRoot && isSameOrChildPath(realPluginRoot, realProjectDir)) {
+    throw new Error(`Cowart projectDir must not be inside the plugin source directory. projectDir=${projectDir}`);
+  }
 
   return { projectDir, canvasDir };
 }
@@ -231,11 +292,22 @@ function extensionFromMimeType(mimeType) {
 
 function sanitizeAssetFileName(name, fallbackName, mimeType) {
   const rawName = basename(String(name || fallbackName || "asset"));
-  const extension = extname(rawName) || extensionFromMimeType(mimeType);
-  const baseName = rawName
+  const requestedExtension = (extname(rawName) || extensionFromMimeType(mimeType))
+    .replace(/[^a-zA-Z0-9.]+/g, "")
+    .slice(0, 16);
+  const extension = /^\.[a-zA-Z0-9]{1,15}$/u.test(requestedExtension)
+    ? requestedExtension
+    : extensionFromMimeType(mimeType);
+  const maximumBaseLength = Math.max(1, MAX_COWART_ASSET_FILE_NAME_CHARS - extension.length);
+  let baseName = rawName
     .slice(0, rawName.length - extname(rawName).length)
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+|-+$/g, "")
+    .replace(/[. ]+$/g, "")
+    .slice(0, maximumBaseLength);
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu.test(baseName)) {
+    baseName = `_${baseName}`.slice(0, maximumBaseLength);
+  }
   return `${baseName || "asset"}${extension}`;
 }
 
@@ -574,6 +646,9 @@ export async function writeCowartPageAsset(args = {}, options = {}) {
   if (!parsed?.buffer?.length) {
     throw new Error("Expected a non-empty dataUrl or dataBase64 image payload.");
   }
+  if (parsed.buffer.length > MAX_COWART_ASSET_BYTES) {
+    throw new Error(`Cowart page asset exceeds the ${MAX_COWART_ASSET_BYTES} byte safety limit.`);
+  }
 
   const mimeType = nonEmptyString(options.mimeType) || parsed.mimeType || "application/octet-stream";
   if (!mimeType.startsWith("image/")) {
@@ -669,6 +744,11 @@ export async function saveCowartCanvasSnapshot(args = {}, snapshot) {
       paths: [],
       skippedRecords: sanitized.skippedRecords,
     };
+  }
+
+  const snapshotBytes = Buffer.byteLength(JSON.stringify(sanitized.snapshot), "utf8");
+  if (snapshotBytes > MAX_COWART_SNAPSHOT_BYTES) {
+    throw new Error(`Cowart canvas snapshot exceeds the ${MAX_COWART_SNAPSHOT_BYTES} byte safety limit.`);
   }
 
   const previous = await loadStoredCanvasSnapshot(args);

@@ -1,14 +1,14 @@
 {
-  "name": "cowart",
-  "version": "0.1.27",
-  "description": "A native tldraw canvas for Codex, backed by cowart_mcp. Use render_cowart_canvas_widget to open, reopen, or explicitly refresh the canvas, and reuse an existing widget for Cowart workflows.",
+  "name": "cowart-safe",
+  "version": "0.1.27-safe.1",
+  "description": "A locally hardened tldraw canvas for Codex, backed by cowart_safe_mcp with explicit project-bound storage and no bundled analytics.",
   "author": {
     "name": "ZHONG XIN",
     "email": "zhongxin123456@gmail.com",
     "url": "https://www.jiqiren.ai"
   },
   "homepage": "https://www.jiqiren.ai",
-  "repository": "https://github.com/zhongerxin/Cowart",
+  "repository": "https://github.com/moondev525/Cowart-safe",
   "license": "MIT",
   "keywords": [
     "canvas",
@@ -20,9 +20,9 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Cowart",
-    "shortDescription": "Open a native tldraw canvas and reuse it across Cowart workflows.",
-    "longDescription": "Cowart brings a tldraw-powered native widget canvas into Codex for visual planning and creative iteration. The cowart_mcp server provides the canvas and project-backed state tools; render_cowart_canvas_widget opens, reopens, or explicitly refreshes the native canvas. Once the widget is open, image generation, annotation editing, HTML, Slides, and other Cowart workflows should reuse it and let MCP-backed storage synchronization update the canvas without rendering another widget tab.",
+    "displayName": "Cowart Safe",
+    "shortDescription": "Open a hardened project-local tldraw canvas without bundled analytics.",
+    "longDescription": "Cowart Safe is a locally hardened fork of Cowart for visual planning and creative iteration. The cowart_safe_mcp server requires an explicit project directory, keeps canvas storage inside that project, disables bundled analytics, and runs generated HTML in an opaque-origin sandbox. Existing Cowart workflows can reuse an open widget without rendering another tab.",
     "developerName": "ZHONG XIN",
     "category": "Productivity",
     "websiteURL": "https://www.jiqiren.ai",
@@ -37,9 +37,9 @@
       "Project-local persistence"
     ],
     "defaultPrompt": [
-      "Open the Cowart canvas for this project.",
-      "Use my Cowart annotation screenshot to generate a clean revised image beside the original.",
-      "Generate a new image into the selected Cowart AI image holder."
+      "Open Cowart Safe for this project.",
+      "Use my Cowart Safe annotation screenshot to generate a revised image beside the original.",
+      "Generate an image into the selected Cowart Safe image holder."
     ]
   }
 }
